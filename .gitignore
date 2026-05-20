@@ -1,0 +1,20 @@
+node_modules/
+dist/
+.vite/
+.npm-cache/
+
+# Raw operational exports stay local. Commit only sanitized generated JSON.
+data/raw/
+*.csv
+*.xlsx
+
+# Python/runtime caches
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+
+# Local editor and OS files
+.DS_Store
+Thumbs.db
+.env
+.env.*

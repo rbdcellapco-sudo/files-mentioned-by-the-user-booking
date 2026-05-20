@@ -1,0 +1,23 @@
+{
+  "name": "ap-circle-bo-transactions-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "data:build": "python scripts/build_data.py",
+    "data:validate": "python scripts/validate_data.py",
+    "dev": "vite --host 0.0.0.0 --base ./",
+    "build": "tsc && vite build --base ./",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "vite": "^7.1.11",
+    "typescript": "^5.9.3",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9"
+  }
+}
