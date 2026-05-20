@@ -620,10 +620,177 @@ function SearchSection({
   );
 }
 
+type BOCategory = "nil" | "low-1-5" | "low-6-10" | "above";
+
+function BOCategoryBreakdown({
+  circle,
+  offices,
+  onCategoryClick
+}: {
+  circle: CircleSummary;
+  offices: Office[];
+  onCategoryClick: (category: BOCategory) => void;
+}) {
+  const categories = [
+    {
+      key: "nil" as BOCategory,
+      label: "Nil Transaction BOs",
+      count: circle.nilBOs,
+      tone: "risk" as const,
+      filter: (office: Office) => office.targetBand === "Nil"
+    },
+    {
+      key: "low-1-5" as BOCategory,
+      label: "1-5 BOs",
+      count: offices.filter((o) => o.targetBand === "1-10" && o.transactions <= 5).length,
+      tone: "warn" as const,
+      filter: (office: Office) => office.targetBand === "1-10" && office.transactions <= 5
+    },
+    {
+      key: "low-6-10" as BOCategory,
+      label: "6-10 BOs",
+      count: offices.filter((o) => o.targetBand === "1-10" && o.transactions > 5).length,
+      tone: "warn" as const,
+      filter: (office: Office) => office.targetBand === "1-10" && office.transactions > 5
+    },
+    {
+      key: "above" as BOCategory,
+      label: "Above 10 BOs",
+      count: circle.aboveTargetBOs,
+      tone: "good" as const,
+      filter: (office: Office) => office.targetBand === ">10"
+    }
+  ];
+
+  return (
+    <div className="bo-category-breakdown">
+      <h3>Category-wise BO Count</h3>
+      <div className="category-grid">
+        {categories.map((cat) => (
+          <button
+            key={cat.key}
+            type="button"
+            className={`category-card ${cat.tone}`}
+            onClick={() => onCategoryClick(cat.key)}
+            title={`Click to view ${cat.label}`}
+          >
+            <span className="category-label">{cat.label}</span>
+            <strong className="category-count">{formatNumber(cat.count)}</strong>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BODetailView({
+  category,
+  offices,
+  onClose
+}: {
+  category: BOCategory;
+  offices: Office[];
+  onClose: () => void;
+}) {
+  const categoryLabels: Record<BOCategory, string> = {
+    nil: "Nil Transaction BOs",
+    "low-1-5": "1-5 Transaction BOs",
+    "low-6-10": "6-10 Transaction BOs",
+    above: "Above 10 Transaction BOs"
+  };
+
+  const filteredOffices = offices.filter((office) => {
+    switch (category) {
+      case "nil":
+        return office.targetBand === "Nil";
+      case "low-1-5":
+        return office.targetBand === "1-10" && office.transactions <= 5;
+      case "low-6-10":
+        return office.targetBand === "1-10" && office.transactions > 5;
+      case "above":
+        return office.targetBand === ">10";
+      default:
+        return false;
+    }
+  });
+
+  const totalTransactions = filteredOffices.reduce(
+    (sum, office) => sum + office.transactions,
+    0
+  );
+  const totalRevenue = filteredOffices.reduce(
+    (sum, office) => sum + office.revenue,
+    0
+  );
+
+  return (
+    <div className="bo-detail-modal">
+      <div className="modal-backdrop" onClick={onClose} />
+      <div className="modal-content">
+        <div className="modal-header">
+          <h2>{categoryLabels[category]}</h2>
+          <button type="button" className="close-btn" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+
+        <div className="modal-stats">
+          <div className="stat-item">
+            <span>Total Offices</span>
+            <strong>{formatNumber(filteredOffices.length)}</strong>
+          </div>
+          <div className="stat-item">
+            <span>Total Transactions</span>
+            <strong>{formatCompact(totalTransactions)}</strong>
+          </div>
+          <div className="stat-item">
+            <span>Total Revenue</span>
+            <strong>{formatCurrency(totalRevenue)}</strong>
+          </div>
+        </div>
+
+        <div className="modal-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Sl.</th>
+                <th>Office Name</th>
+                <th>Region</th>
+                <th>Division</th>
+                <th>Transactions</th>
+                <th>Revenue</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredOffices
+                .sort((a, b) => b.transactions - a.transactions)
+                .map((office, index) => (
+                  <tr key={office.officeId}>
+                    <td>{index + 1}</td>
+                    <td>
+                      <strong>{office.officeName}</strong>
+                    </td>
+                    <td>{office.regionName}</td>
+                    <td>{office.divisionName}</td>
+                    <td>{formatNumber(office.transactions)}</td>
+                    <td>{formatCurrency(office.revenue)}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Dashboard({ data }: { data: DashboardData }) {
   const [divisionCategory, setDivisionCategory] = useState<
     Record<string, OfficeCategory>
   >({});
+  const [selectedBOCategory, setSelectedBOCategory] = useState<BOCategory | null>(
+    null
+  );
 
   const rankedRegions = useMemo(
     () => [...data.regions].sort((left, right) => targetRate(right) - targetRate(left)),
@@ -745,6 +912,12 @@ function Dashboard({ data }: { data: DashboardData }) {
           />
         </div>
 
+        <BOCategoryBreakdown
+          circle={data.circle}
+          offices={data.offices}
+          onCategoryClick={setSelectedBOCategory}
+        />
+
         <div className="circle-insights">
           <div className="product-panel">
             <h3>Booking Mix</h3>
@@ -808,6 +981,14 @@ function Dashboard({ data }: { data: DashboardData }) {
       </section>
 
       <SearchSection regions={regions} divisions={divisions} offices={data.offices} />
+
+      {selectedBOCategory && (
+        <BODetailView
+          category={selectedBOCategory}
+          offices={data.offices}
+          onClose={() => setSelectedBOCategory(null)}
+        />
+      )}
     </main>
   );
 }
