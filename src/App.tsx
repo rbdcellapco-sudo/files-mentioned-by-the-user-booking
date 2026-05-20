@@ -292,12 +292,14 @@ function DivisionCard({
   division,
   offices,
   selectedCategory,
-  onCategoryChange
+  onCategoryChange,
+  onDivisionBOCategoryClick
 }: {
   division: Summary;
   offices: Office[];
   selectedCategory: OfficeCategory;
   onCategoryChange: (category: OfficeCategory) => void;
+  onDivisionBOCategoryClick: (divisionName: string, category: BOCategory) => void;
 }) {
   const categoryOffices = offices.filter(
     (office) =>
@@ -311,6 +313,13 @@ function DivisionCard({
   const topOffice = [...categoryOffices].sort(
     (left, right) => right.transactions - left.transactions
   )[0];
+
+  // Calculate BO categories for this division
+  const divisionAllBOs = offices.filter((office) => office.divisionName === division.name && office.category === "BO");
+  const nilBOs = divisionAllBOs.filter((o) => o.targetBand === "Nil").length;
+  const low1_5BOs = divisionAllBOs.filter((o) => o.targetBand === "1-10" && o.transactions <= 5).length;
+  const low6_10BOs = divisionAllBOs.filter((o) => o.targetBand === "1-10" && o.transactions > 5).length;
+  const aboveBOs = divisionAllBOs.filter((o) => o.targetBand === ">10").length;
 
   return (
     <article className="division-card">
@@ -375,7 +384,155 @@ function DivisionCard({
       ) : (
         <p className="top-office muted">No offices in this category.</p>
       )}
+
+      <div className="division-bo-categories">
+        <div className="categories-title">BO Categories</div>
+        <div className="categories-mini-grid">
+          <button
+            type="button"
+            className="mini-category-btn risk"
+            onClick={() => onDivisionBOCategoryClick(division.name, "nil")}
+            title={`${nilBOs} Nil Transaction BOs`}
+          >
+            <span className="mini-count">{formatNumber(nilBOs)}</span>
+            <span className="mini-label">Nil</span>
+          </button>
+          <button
+            type="button"
+            className="mini-category-btn warn"
+            onClick={() => onDivisionBOCategoryClick(division.name, "low-1-5")}
+            title={`${low1_5BOs} 1-5 Transaction BOs`}
+          >
+            <span className="mini-count">{formatNumber(low1_5BOs)}</span>
+            <span className="mini-label">1-5</span>
+          </button>
+          <button
+            type="button"
+            className="mini-category-btn warn"
+            onClick={() => onDivisionBOCategoryClick(division.name, "low-6-10")}
+            title={`${low6_10BOs} 6-10 Transaction BOs`}
+          >
+            <span className="mini-count">{formatNumber(low6_10BOs)}</span>
+            <span className="mini-label">6-10</span>
+          </button>
+          <button
+            type="button"
+            className="mini-category-btn good"
+            onClick={() => onDivisionBOCategoryClick(division.name, "above")}
+            title={`${aboveBOs} Above 10 Transaction BOs`}
+          >
+            <span className="mini-count">{formatNumber(aboveBOs)}</span>
+            <span className="mini-label">Above 10</span>
+          </button>
+        </div>
+      </div>
     </article>
+  );
+}
+
+function DivisionBODetailView({
+  divisionName,
+  category,
+  offices,
+  onClose
+}: {
+  divisionName: string;
+  category: BOCategory;
+  offices: Office[];
+  onClose: () => void;
+}) {
+  const categoryLabels: Record<BOCategory, string> = {
+    nil: "Nil Transaction BOs",
+    "low-1-5": "1-5 Transaction BOs",
+    "low-6-10": "6-10 Transaction BOs",
+    above: "Above 10 Transaction BOs"
+  };
+
+  const filteredOffices = offices
+    .filter((office) => office.divisionName === divisionName && office.category === "BO")
+    .filter((office) => {
+      switch (category) {
+        case "nil":
+          return office.targetBand === "Nil";
+        case "low-1-5":
+          return office.targetBand === "1-10" && office.transactions <= 5;
+        case "low-6-10":
+          return office.targetBand === "1-10" && office.transactions > 5;
+        case "above":
+          return office.targetBand === ">10";
+        default:
+          return false;
+      }
+    });
+
+  const totalTransactions = filteredOffices.reduce(
+    (sum, office) => sum + office.transactions,
+    0
+  );
+  const totalRevenue = filteredOffices.reduce((sum, office) => sum + office.revenue, 0);
+
+  return (
+    <div className="division-detail-page">
+      <div className="detail-page-content">
+        <div className="detail-page-header">
+          <div>
+            <span className="kicker">Division Detail</span>
+            <h2>
+              {divisionName} · {categoryLabels[category]}
+            </h2>
+          </div>
+          <button type="button" className="close-btn" onClick={onClose}>
+            ← Back
+          </button>
+        </div>
+
+        <div className="modal-stats">
+          <div className="stat-item">
+            <span>Total Offices</span>
+            <strong>{formatNumber(filteredOffices.length)}</strong>
+          </div>
+          <div className="stat-item">
+            <span>Total Transactions</span>
+            <strong>{formatCompact(totalTransactions)}</strong>
+          </div>
+          <div className="stat-item">
+            <span>Total Revenue</span>
+            <strong>{formatCurrency(totalRevenue)}</strong>
+          </div>
+        </div>
+
+        <div className="modal-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Sl.</th>
+                <th>Office Name</th>
+                <th>Region</th>
+                <th>Sub-Division</th>
+                <th>Transactions</th>
+                <th>Revenue</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredOffices
+                .sort((a, b) => b.transactions - a.transactions)
+                .map((office, index) => (
+                  <tr key={office.officeId}>
+                    <td>{index + 1}</td>
+                    <td>
+                      <strong>{office.officeName}</strong>
+                    </td>
+                    <td>{office.regionName}</td>
+                    <td>{office.subDivisionName}</td>
+                    <td>{formatNumber(office.transactions)}</td>
+                    <td>{formatCurrency(office.revenue)}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -622,6 +779,59 @@ function SearchSection({
 
 type BOCategory = "nil" | "low-1-5" | "low-6-10" | "above";
 
+function generateMonthDateRange(dateStart: string, dateEnd: string): Array<{ month: string; label: string }> {
+  const months = [];
+  const start = new Date(dateStart);
+  const end = new Date(dateEnd);
+
+  for (let d = new Date(start); d <= end; d.setMonth(d.getMonth() + 1)) {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const monthName = new Intl.DateTimeFormat("en-IN", { month: "long", year: "numeric" }).format(
+      new Date(year, d.getMonth(), 1)
+    );
+    months.push({ month: `${year}-${month}`, label: monthName });
+  }
+
+  return months;
+}
+
+function MonthSelector({
+  dateStart,
+  dateEnd,
+  selectedMonth,
+  onMonthChange
+}: {
+  dateStart: string;
+  dateEnd: string;
+  selectedMonth: string | null;
+  onMonthChange: (month: string) => void;
+}) {
+  const months = useMemo(() => generateMonthDateRange(dateStart, dateEnd), [dateStart, dateEnd]);
+
+  return (
+    <div className="month-selector">
+      <label>
+        <span className="month-label">Select Month</span>
+        <select value={selectedMonth || "all"} onChange={(e) => onMonthChange(e.target.value)}>
+          <option value="all">All Months</option>
+          {months.map((m) => (
+            <option key={m.month} value={m.month}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      {selectedMonth && selectedMonth !== "all" && (
+        <p className="month-note">
+          Showing selection for the chosen month. Monthly source data is not separated in the current dataset,
+          so totals are still based on the available aggregated data range.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function BOCategoryBreakdown({
   circle,
   offices,
@@ -791,6 +1001,20 @@ function Dashboard({ data }: { data: DashboardData }) {
   const [selectedBOCategory, setSelectedBOCategory] = useState<BOCategory | null>(
     null
   );
+  const [selectedMonth, setSelectedMonth] = useState<string | null>("all");
+  const [selectedDivisionBO, setSelectedDivisionBO] = useState<{
+    divisionName: string;
+    category: BOCategory;
+  } | null>(null);
+
+  const monthOptions = useMemo(
+    () => generateMonthDateRange(data.metadata.dateStart, data.metadata.dateEnd),
+    [data.metadata.dateStart, data.metadata.dateEnd]
+  );
+  const selectedMonthLabel =
+    selectedMonth && selectedMonth !== "all"
+      ? monthOptions.find((m) => m.month === selectedMonth)?.label ?? selectedMonth
+      : "All Months";
 
   const rankedRegions = useMemo(
     () => [...data.regions].sort((left, right) => targetRate(right) - targetRate(left)),
@@ -840,6 +1064,9 @@ function Dashboard({ data }: { data: DashboardData }) {
                 [division.name]: category
               }))
             }
+            onDivisionBOCategoryClick={(divisionName, category) =>
+              setSelectedDivisionBO({ divisionName, category })
+            }
           />
         ))}
       </div>
@@ -853,8 +1080,7 @@ function Dashboard({ data }: { data: DashboardData }) {
           <span className="kicker">AP Circle</span>
           <h1>BO Transactions Dashboard</h1>
           <p>
-            Monitoring nil and low-transaction Branch Post Offices for{" "}
-            {data.metadata.dateStart} to {data.metadata.dateEnd}.
+            Monitoring nil and low-transaction Branch Post Offices for {selectedMonthLabel}.
           </p>
         </div>
         <div className="source-panel">
@@ -866,6 +1092,13 @@ function Dashboard({ data }: { data: DashboardData }) {
           </small>
         </div>
       </header>
+
+      <MonthSelector
+        dateStart={data.metadata.dateStart}
+        dateEnd={data.metadata.dateEnd}
+        selectedMonth={selectedMonth}
+        onMonthChange={setSelectedMonth}
+      />
 
       <section className="circle-section">
         <SectionHeader
@@ -987,6 +1220,15 @@ function Dashboard({ data }: { data: DashboardData }) {
           category={selectedBOCategory}
           offices={data.offices}
           onClose={() => setSelectedBOCategory(null)}
+        />
+      )}
+
+      {selectedDivisionBO && (
+        <DivisionBODetailView
+          divisionName={selectedDivisionBO.divisionName}
+          category={selectedDivisionBO.category}
+          offices={data.offices}
+          onClose={() => setSelectedDivisionBO(null)}
         />
       )}
     </main>
