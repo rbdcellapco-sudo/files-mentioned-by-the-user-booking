@@ -172,7 +172,7 @@ def build_hierarchy(hierarchy_path: Path) -> dict[int, dict[str, Any]]:
     return offices
 
 
-def read_bookings(bookings_path: Path) -> tuple[dict[int, dict[str, Any]], dict[str, Any]]:
+def read_bookings(bookings_path: Path) -> tuple[dict[int, dict[str, Any]], dict[str, dict[int, dict[str, Any]]], dict[str, Any]]:
     metrics: dict[int, dict[str, Any]] = defaultdict(empty_metrics)
     product_totals: dict[str, dict[str, float]] = defaultdict(
         lambda: {"transactions": 0, "revenue": 0.0}
@@ -184,6 +184,23 @@ def read_bookings(bookings_path: Path) -> tuple[dict[int, dict[str, Any]], dict[
     }
     booking_office_names: dict[int, str] = {}
     booking_dates: list[str] = []
+    booking_metrics_by_month: dict[str, dict[int, dict[str, Any]]] = defaultdict(
+        lambda: defaultdict(empty_metrics)
+    )
+    month_row_counts: Counter = Counter()
+    month_date_bounds: dict[str, dict[str, str]] = defaultdict(
+        lambda: {"min": "", "max": ""}
+    )
+    month_product_totals: dict[str, dict[str, dict[str, float]]] = defaultdict(
+        lambda: defaultdict(lambda: {"transactions": 0, "revenue": 0.0})
+    )
+    month_bucket_totals: dict[str, dict[str, dict[str, float]]] = defaultdict(
+        lambda: {
+            "speedPost": {"transactions": 0, "revenue": 0.0},
+            "parcels": {"transactions": 0, "revenue": 0.0},
+            "other": {"transactions": 0, "revenue": 0.0},
+        }
+    )
     negative_row_examples: list[dict[str, Any]] = []
     negative_row_count = 0
     csv_rows = 0
@@ -215,8 +232,18 @@ def read_bookings(bookings_path: Path) -> tuple[dict[int, dict[str, Any]], dict[
             bucket = product_bucket(product_name)
             date_value = text(row["booking-date"])[:10]
 
+            month = date_value[:7] if date_value else ""
             if date_value:
                 booking_dates.append(date_value)
+            if month:
+                month_row_counts[month] += 1
+                month_bounds = month_date_bounds[month]
+                month_bounds["min"] = (
+                    date_value if not month_bounds["min"] or date_value < month_bounds["min"] else month_bounds["min"]
+                )
+                month_bounds["max"] = (
+                    date_value if not month_bounds["max"] or date_value > month_bounds["max"] else month_bounds["max"]
+                )
             if revenue < 0:
                 negative_row_count += 1
                 if len(negative_row_examples) < 25:
@@ -250,6 +277,24 @@ def read_bookings(bookings_path: Path) -> tuple[dict[int, dict[str, Any]], dict[
             bucket_totals[bucket]["transactions"] += transactions
             bucket_totals[bucket]["revenue"] += revenue
 
+            if month:
+                month_metrics = booking_metrics_by_month[month][office_id]
+                month_metrics["transactions"] += transactions
+                month_metrics["revenue"] += revenue
+                month_metrics["rowCount"] += 1
+                month_metrics["bucketTransactions"][bucket] += transactions
+                month_metrics["bucketRevenue"][bucket] += revenue
+
+                if bucket == "speedPost":
+                    detail = month_metrics["speedPostDetails"][product_name]
+                    detail["transactions"] += transactions
+                    detail["revenue"] += revenue
+
+                month_product_totals[month][product_name]["transactions"] += transactions
+                month_product_totals[month][product_name]["revenue"] += revenue
+                month_bucket_totals[month][bucket]["transactions"] += transactions
+                month_bucket_totals[month][bucket]["revenue"] += revenue
+
     metadata = {
         "csvRows": csv_rows,
         "uniqueBookingOffices": len(booking_office_names),
@@ -274,8 +319,38 @@ def read_bookings(bookings_path: Path) -> tuple[dict[int, dict[str, Any]], dict[
             }
             for key, values in bucket_totals.items()
         },
+        "bookingRowsByMonth": dict(month_row_counts),
+        "dateBoundsByMonth": {
+            month: {
+                "min": bounds["min"],
+                "max": bounds["max"],
+            }
+            for month, bounds in sorted(month_date_bounds.items())
+        },
+        "productTotalsByMonth": {
+            month: [
+                {
+                    "productName": product_name,
+                    "transactions": int(values["transactions"]),
+                    "revenue": round2(values["revenue"]),
+                    "bucket": product_bucket(product_name),
+                }
+                for product_name, values in sorted(products.items())
+            ]
+            for month, products in sorted(month_product_totals.items())
+        },
+        "bucketTotalsByMonth": {
+            month: {
+                bucket: {
+                    "transactions": int(values["transactions"]),
+                    "revenue": round2(values["revenue"]),
+                }
+                for bucket, values in totals.items()
+            }
+            for month, totals in sorted(month_bucket_totals.items())
+        },
     }
-    return metrics, metadata
+    return metrics, booking_metrics_by_month, metadata
 
 
 def finalize_offices(
@@ -408,12 +483,17 @@ def summarize_group(offices: list[dict[str, Any]], key: str) -> list[dict[str, A
     return sorted(summaries, key=lambda item: item["name"])
 
 
-def build_payload(bookings_path: Path, hierarchy_path: Path) -> dict[str, Any]:
-    hierarchy = build_hierarchy(hierarchy_path)
-    booking_metrics, booking_meta = read_bookings(bookings_path)
-    booking_office_names = booking_meta.pop("bookingOfficeNames")
-    offices = finalize_offices(hierarchy, booking_metrics, booking_office_names)
-
+def build_payload_from_offices(
+    offices: list[dict[str, Any]],
+    booking_meta: dict[str, Any],
+    date_start: str,
+    date_end: str,
+    csv_rows: int,
+    unique_booking_offices: int,
+    bookings_path: Path,
+    hierarchy_offices: int,
+    product_totals: list[dict[str, Any]],
+) -> dict[str, Any]:
     active_bos = [
         office
         for office in offices
@@ -479,12 +559,12 @@ def build_payload(bookings_path: Path, hierarchy_path: Path) -> dict[str, Any]:
                 "hierarchy": hierarchy_path.name,
             },
             "generatedAt": datetime.now(timezone.utc).isoformat(),
-            "dateStart": booking_meta["dateStart"],
-            "dateEnd": booking_meta["dateEnd"],
+            "dateStart": date_start,
+            "dateEnd": date_end,
             "rowCounts": {
-                "csvRows": booking_meta["csvRows"],
-                "uniqueBookingOffices": booking_meta["uniqueBookingOffices"],
-                "hierarchyOffices": len(hierarchy),
+                "csvRows": csv_rows,
+                "uniqueBookingOffices": unique_booking_offices,
+                "hierarchyOffices": hierarchy_offices,
                 "generatedOffices": len(offices),
             },
             "rules": {
@@ -503,9 +583,7 @@ def build_payload(bookings_path: Path, hierarchy_path: Path) -> dict[str, Any]:
             "activeBOs": len(active_bos),
             "nilBOs": sum(1 for office in active_bos if office["targetBand"] == "Nil"),
             "lowBOs": sum(1 for office in active_bos if office["targetBand"] == "1-10"),
-            "aboveTargetBOs": sum(
-                1 for office in active_bos if office["targetBand"] == ">10"
-            ),
+            "aboveTargetBOs": sum(1 for office in active_bos if office["targetBand"] == ">10"),
             "transactions": int(total_transactions),
             "revenue": round2(total_revenue),
             "bucketTransactions": {
@@ -537,22 +615,68 @@ def build_payload(bookings_path: Path, hierarchy_path: Path) -> dict[str, Any]:
             "divisionName",
         ),
         "offices": offices,
-        "productTotals": booking_meta["productTotals"],
+        "productTotals": product_totals,
         "dataQuality": data_quality,
     }
+
+
+def build_payload(bookings_path: Path, hierarchy_path: Path) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    hierarchy = build_hierarchy(hierarchy_path)
+    booking_metrics, booking_metrics_by_month, booking_meta = read_bookings(bookings_path)
+    booking_office_names = booking_meta["bookingOfficeNames"]
+    offices = finalize_offices(hierarchy, booking_metrics, booking_office_names)
+
+    payload = build_payload_from_offices(
+        offices,
+        booking_meta,
+        booking_meta["dateStart"],
+        booking_meta["dateEnd"],
+        booking_meta["csvRows"],
+        booking_meta["uniqueBookingOffices"],
+        bookings_path,
+        len(hierarchy),
+        booking_meta["productTotals"],
+    )
+
+    monthly_payloads: dict[str, dict[str, Any]] = {}
+    for month, month_metrics in sorted(booking_metrics_by_month.items()):
+        month_offices = finalize_offices(hierarchy, month_metrics, booking_office_names)
+        month_date_bounds = booking_meta["dateBoundsByMonth"][month]
+        month_rows = booking_meta["bookingRowsByMonth"].get(month, 0)
+        month_unique_offices = len(month_metrics)
+        month_product_totals = booking_meta["productTotalsByMonth"].get(month, [])
+
+        monthly_payloads[month] = build_payload_from_offices(
+            month_offices,
+            booking_meta,
+            month_date_bounds["min"],
+            month_date_bounds["max"],
+            month_rows,
+            month_unique_offices,
+            bookings_path,
+            len(hierarchy),
+            month_product_totals,
+        )
+
+    return payload, monthly_payloads
 
 
 def main() -> None:
     args = parse_args()
     bookings_path = resolve_source(args.bookings, "BOOKING_CSV", BOOKING_CANDIDATES)
     hierarchy_path = resolve_source(args.hierarchy, "HIERARCHY_XLSX", HIERARCHY_CANDIDATES)
-    payload = build_payload(bookings_path, hierarchy_path)
+    payload, monthly_payloads = build_payload(bookings_path, hierarchy_path)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
     print(f"Wrote {out_path}")
+
+    for month, month_payload in monthly_payloads.items():
+        month_path = out_path.with_name(f"{out_path.stem}-{month}.json")
+        month_path.write_text(json.dumps(month_payload, indent=2), encoding="utf-8")
+        print(f"Wrote {month_path}")
+
     print(
         "Rows: {csvRows:,} | Offices: {generatedOffices:,} | Active BOs: {activeBOs:,}".format(
             csvRows=payload["metadata"]["rowCounts"]["csvRows"],

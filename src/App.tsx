@@ -430,7 +430,7 @@ function DivisionCard({
   );
 }
 
-function DivisionBODetailView({
+function DivisionBODetailPage({
   divisionName,
   category,
   offices,
@@ -797,18 +797,16 @@ function generateMonthDateRange(dateStart: string, dateEnd: string): Array<{ mon
 }
 
 function MonthSelector({
-  dateStart,
-  dateEnd,
+  months,
   selectedMonth,
-  onMonthChange
+  onMonthChange,
+  note
 }: {
-  dateStart: string;
-  dateEnd: string;
+  months: Array<{ month: string; label: string }>;
   selectedMonth: string | null;
   onMonthChange: (month: string) => void;
+  note?: string;
 }) {
-  const months = useMemo(() => generateMonthDateRange(dateStart, dateEnd), [dateStart, dateEnd]);
-
   return (
     <div className="month-selector">
       <label>
@@ -822,12 +820,7 @@ function MonthSelector({
           ))}
         </select>
       </label>
-      {selectedMonth && selectedMonth !== "all" && (
-        <p className="month-note">
-          Showing selection for the chosen month. Monthly source data is not separated in the current dataset,
-          so totals are still based on the available aggregated data range.
-        </p>
-      )}
+      {note && <p className="month-note">{note}</p>}
     </div>
   );
 }
@@ -994,27 +987,31 @@ function BODetailView({
   );
 }
 
-function Dashboard({ data }: { data: DashboardData }) {
+function Dashboard({
+  data,
+  monthOptions,
+  selectedMonth,
+  selectedMonthLabel,
+  onMonthChange,
+  monthNote
+}: {
+  data: DashboardData;
+  monthOptions: Array<{ month: string; label: string }>;
+  selectedMonth: string | null;
+  selectedMonthLabel: string;
+  onMonthChange: (month: string) => void;
+  monthNote: string;
+}) {
   const [divisionCategory, setDivisionCategory] = useState<
     Record<string, OfficeCategory>
   >({});
   const [selectedBOCategory, setSelectedBOCategory] = useState<BOCategory | null>(
     null
   );
-  const [selectedMonth, setSelectedMonth] = useState<string | null>("all");
   const [selectedDivisionBO, setSelectedDivisionBO] = useState<{
     divisionName: string;
     category: BOCategory;
   } | null>(null);
-
-  const monthOptions = useMemo(
-    () => generateMonthDateRange(data.metadata.dateStart, data.metadata.dateEnd),
-    [data.metadata.dateStart, data.metadata.dateEnd]
-  );
-  const selectedMonthLabel =
-    selectedMonth && selectedMonth !== "all"
-      ? monthOptions.find((m) => m.month === selectedMonth)?.label ?? selectedMonth
-      : "All Months";
 
   const rankedRegions = useMemo(
     () => [...data.regions].sort((left, right) => targetRate(right) - targetRate(left)),
@@ -1044,6 +1041,17 @@ function Dashboard({ data }: { data: DashboardData }) {
     dateStyle: "medium",
     timeStyle: "short"
   });
+
+  if (selectedDivisionBO) {
+    return (
+      <DivisionBODetailPage
+        divisionName={selectedDivisionBO.divisionName}
+        category={selectedDivisionBO.category}
+        offices={data.offices}
+        onClose={() => setSelectedDivisionBO(null)}
+      />
+    );
+  }
 
   const renderDivisionGroup = (title: string, divisionsToRender: Summary[]) => (
     <div className="division-group">
@@ -1094,10 +1102,10 @@ function Dashboard({ data }: { data: DashboardData }) {
       </header>
 
       <MonthSelector
-        dateStart={data.metadata.dateStart}
-        dateEnd={data.metadata.dateEnd}
+        months={monthOptions}
         selectedMonth={selectedMonth}
-        onMonthChange={setSelectedMonth}
+        onMonthChange={onMonthChange}
+        note={monthNote}
       />
 
       <section className="circle-section">
@@ -1222,22 +1230,16 @@ function Dashboard({ data }: { data: DashboardData }) {
           onClose={() => setSelectedBOCategory(null)}
         />
       )}
-
-      {selectedDivisionBO && (
-        <DivisionBODetailView
-          divisionName={selectedDivisionBO.divisionName}
-          category={selectedDivisionBO.category}
-          offices={data.offices}
-          onClose={() => setSelectedDivisionBO(null)}
-        />
-      )}
     </main>
   );
 }
 
 function App() {
-  const [data, setData] = useState<DashboardData | null>(null);
+  const [baseData, setBaseData] = useState<DashboardData | null>(null);
+  const [displayData, setDisplayData] = useState<DashboardData | null>(null);
   const [error, setError] = useState("");
+  const [selectedMonth, setSelectedMonth] = useState<string | null>("all");
+  const [monthNote, setMonthNote] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -1251,7 +1253,9 @@ function App() {
       })
       .then((payload: DashboardData) => {
         if (active) {
-          setData(payload);
+          setBaseData(payload);
+          setDisplayData(payload);
+          setMonthNote("");
         }
       })
       .catch((reason: unknown) => {
@@ -1265,6 +1269,70 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!baseData) {
+      return;
+    }
+
+    if (selectedMonth === "all") {
+      setDisplayData(baseData);
+      setMonthNote("");
+      return;
+    }
+
+    let active = true;
+    const monthUrl = `${import.meta.env.BASE_URL}data/dashboard-data-${selectedMonth}.json`;
+
+    fetch(monthUrl)
+      .then((response) => {
+        if (!active) {
+          return null;
+        }
+
+        if (!response.ok) {
+          setDisplayData(baseData);
+          setMonthNote(
+            `Monthly data for ${selectedMonth} is not available. Showing full-range dataset.`
+          );
+          return null;
+        }
+        return response.json();
+      })
+      .then((payload: DashboardData | null) => {
+        if (!active || !payload) {
+          return;
+        }
+        setDisplayData(payload);
+        setMonthNote("");
+      })
+      .catch(() => {
+        if (!active) {
+          return;
+        }
+        setDisplayData(baseData);
+        setMonthNote(
+          `Monthly data for ${selectedMonth} could not be loaded. Showing full-range dataset.`
+        );
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [selectedMonth, baseData]);
+
+  const monthOptions = useMemo(
+    () =>
+      baseData
+        ? generateMonthDateRange(baseData.metadata.dateStart, baseData.metadata.dateEnd)
+        : [],
+    [baseData]
+  );
+
+  const selectedMonthLabel =
+    selectedMonth && selectedMonth !== "all"
+      ? monthOptions.find((m) => m.month === selectedMonth)?.label ?? selectedMonth
+      : "All Months";
+
   if (error) {
     return (
       <main>
@@ -1277,7 +1345,7 @@ function App() {
     );
   }
 
-  if (!data) {
+  if (!displayData || !baseData) {
     return (
       <main>
         <section className="load-state">
@@ -1289,7 +1357,16 @@ function App() {
     );
   }
 
-  return <Dashboard data={data} />;
+  return (
+    <Dashboard
+      data={displayData}
+      monthOptions={monthOptions}
+      selectedMonth={selectedMonth}
+      selectedMonthLabel={selectedMonthLabel}
+      onMonthChange={setSelectedMonth}
+      monthNote={monthNote}
+    />
+  );
 }
 
 export default App;
