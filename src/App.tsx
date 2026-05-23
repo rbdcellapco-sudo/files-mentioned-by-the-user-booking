@@ -1735,39 +1735,43 @@ function App() {
       return;
     }
 
-    const monthUrl = `${import.meta.env.BASE_URL}data/${monthFile}`;
-    fetch(monthUrl)
-      .then((response) => {
-        if (!active) {
-          return null;
+    (async () => {
+      const monthUrl = `${import.meta.env.BASE_URL}data/${monthFile}`;
+      try {
+        const resp = await fetch(monthUrl);
+        if (!active) return;
+        if (resp.ok) {
+          const text = await resp.text();
+          const monthlyData = buildMonthlyDashboardData(baseData, text, monthKey, monthFile);
+          setDisplayData(monthlyData);
+          setMonthNote("");
+          return;
         }
 
-        if (!response.ok) {
-          setDisplayData(baseData);
-          setMonthNote(
-            `Monthly data for ${selectedMonth} is not available in the uploaded files. Showing full-range dataset.`
-          );
-          return null;
-        }
-        return response.text();
-      })
-      .then((payloadText: string | null) => {
-        if (!active || payloadText === null) {
+        // Try raw GitHub URL as a fallback (useful when Pages artifact differs)
+        const rawFallback = `https://raw.githubusercontent.com/rbdcellapco-sudo/files-mentioned-by-the-user-booking/main/docs/data/${monthFile}`;
+        const rawResp = await fetch(rawFallback);
+        if (!active) return;
+        if (rawResp.ok) {
+          const text = await rawResp.text();
+          const monthlyData = buildMonthlyDashboardData(baseData, text, monthKey, monthFile);
+          setDisplayData(monthlyData);
+          setMonthNote("");
           return;
         }
-        const monthlyData = buildMonthlyDashboardData(baseData, payloadText, monthKey, monthFile);
-        setDisplayData(monthlyData);
-        setMonthNote("");
-      })
-      .catch(() => {
-        if (!active) {
-          return;
-        }
+
         setDisplayData(baseData);
         setMonthNote(
-          `Monthly data for ${selectedMonth} could not be loaded. Showing full-range dataset.`
+          `Monthly data for ${monthKey} is not available in the uploaded files. Showing full-range dataset.`
         );
-      });
+      } catch (e) {
+        if (!active) return;
+        setDisplayData(baseData);
+        setMonthNote(
+          `Monthly data for ${monthKey} could not be loaded. Showing full-range dataset.`
+        );
+      }
+    })();
 
     return () => {
       active = false;
