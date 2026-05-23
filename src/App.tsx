@@ -162,6 +162,450 @@ function formatPercent(value: number, total: number): string {
   return `${Math.round((value / total) * 100)}%`;
 }
 
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function parseCsvLine(line: string): string[] {
+  const values: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === "," && !inQuotes) {
+      values.push(current);
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+
+  values.push(current);
+  return values;
+}
+
+function parseCsv(text: string): Array<Record<string, string>> {
+  const lines = text.split(/\r?\n/).filter((line) => line.trim() !== "");
+  if (!lines.length) {
+    return [];
+  }
+
+  const headers = parseCsvLine(lines[0]);
+  return lines.slice(1).map((line) => {
+    const values = parseCsvLine(line);
+    const row: Record<string, string> = {};
+    headers.forEach((header, index) => {
+      row[header] = values[index] ?? "";
+    });
+    return row;
+  });
+}
+
+function productBucket(productName: string): BucketKey {
+  const normalized = productName.toLowerCase();
+  if (normalized.includes("speed post")) {
+    return "speedPost";
+  }
+  if (normalized.includes("parcel")) {
+    return "parcels";
+  }
+  return "other";
+}
+
+function getMonthCsvFileName(month: string): string | null {
+  const map: Record<string, string> = {
+    "2026-04": "Booking_Productwise_Report-Apr2026.csv",
+    "2026-05": "Booking_Productwise_Report-may2026.csv"
+  };
+  return map[month] ?? null;
+}
+
+function summarizeGroup(offices: Office[], key: "regionName" | "divisionName"): Summary[] {
+  const grouped: Record<string, Office[]> = {};
+  for (const office of offices) {
+    const name = office[key] || "Unmapped";
+    grouped[name] = grouped[name] || [];
+    grouped[name].push(office);
+  }
+
+  return Object.entries(grouped)
+    .map(([name, groupOffices]) => {
+      const active_bos = groupOffices.filter(
+        (office) => office.category === "BO" && office.officeStatus === "Active"
+      );
+      const categoryCounts = groupOffices.reduce(
+        (counts, office) => {
+          counts[office.category] = (counts[office.category] || 0) + 1;
+          return counts;
+        },
+        {} as Record<OfficeCategory, number>
+      );
+
+      const bucketTransactions = groupOffices.reduce(
+        (acc, office) => {
+          (Object.keys(office.bucketTransactions) as BucketKey[]).forEach((bucket) => {
+            acc[bucket] += office.bucketTransactions[bucket];
+          });
+          return acc;
+        },
+        { speedPost: 0, parcels: 0, other: 0 } as BucketValues
+      );
+
+      const bucketRevenue = groupOffices.reduce(
+        (acc, office) => {
+          (Object.keys(office.bucketRevenue) as BucketKey[]).forEach((bucket) => {
+            acc[bucket] += office.bucketRevenue[bucket];
+          });
+          return acc;
+        },
+        { speedPost: 0, parcels: 0, other: 0 } as BucketValues
+      );
+
+      return {
+        name,
+        regionName: groupOffices[0].regionName,
+        divisionGroup: groupOffices[0].divisionGroup,
+        officeCount: groupOffices.length,
+        officeCountsByCategory: {
+          HO: categoryCounts.HO ?? 0,
+          SO: categoryCounts.SO ?? 0,
+          BO: categoryCounts.BO ?? 0,
+          Others: categoryCounts.Others ?? 0
+        },
+        activeBOs: active_bos.length,
+        nilBOs: active_bos.filter((office) => office.targetBand === "Nil").length,
+        lowBOs: active_bos.filter((office) => office.targetBand === "1-10").length,
+        aboveTargetBOs: active_bos.filter((office) => office.targetBand === ">10").length,
+        transactions: groupOffices.reduce((sum, office) => sum + office.transactions, 0),
+        revenue: round2(groupOffices.reduce((sum, office) => sum + office.revenue, 0)),
+        bucketTransactions: {
+          speedPost: bucketTransactions.speedPost,
+          parcels: bucketTransactions.parcels,
+          other: bucketTransactions.other
+        },
+        bucketRevenue: {
+          speedPost: round2(bucketRevenue.speedPost),
+          parcels: round2(bucketRevenue.parcels),
+          other: round2(bucketRevenue.other)
+        }
+      };
+    })
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function buildMonthlyDashboardData(
+  baseData: DashboardData,
+  csvText: string,
+  month: string,
+  sourceFile: string
+): DashboardData {
+  const rows = parseCsv(csvText);
+  const officeMetaMap = new Map<number, Office>();
+  for (const office of baseData.offices) {
+    officeMetaMap.set(office.officeId, office);
+  }
+
+  const officeMetrics = new Map<
+    number,
+    {
+      transactions: number;
+      revenue: number;
+      rowCount: number;
+      bucketTransactions: BucketValues;
+      bucketRevenue: BucketValues;
+      speedPostDetails: Record<string, { transactions: number; revenue: number }>;
+    }
+  >();
+
+  const productTotalsMap = new Map<string, { transactions: number; revenue: number }>();
+  const bucketTotals: BucketValues = { speedPost: 0, parcels: 0, other: 0 };
+  const rowDates: string[] = [];
+  let csvRows = 0;
+  const negativeRowExamples: Array<{
+    officeId: number;
+    officeName: string;
+    productName: string;
+    transactions: number;
+    tax: number;
+    totalAmount: number;
+    revenue: number;
+  }> = [];
+  let negativeRowCount = 0;
+
+  const getOrCreateMetrics = (officeId: number) => {
+    let metrics = officeMetrics.get(officeId);
+    if (!metrics) {
+      metrics = {
+        transactions: 0,
+        revenue: 0,
+        rowCount: 0,
+        bucketTransactions: { speedPost: 0, parcels: 0, other: 0 },
+        bucketRevenue: { speedPost: 0, parcels: 0, other: 0 },
+        speedPostDetails: {}
+      };
+      officeMetrics.set(officeId, metrics);
+    }
+    return metrics;
+  };
+
+  for (const row of rows) {
+    const officeId = parseInt(row["office-id"], 10);
+    if (Number.isNaN(officeId)) {
+      continue;
+    }
+
+    csvRows += 1;
+    const productName = row["product-name"] || "Unknown product";
+    const transactions = Number.parseInt(row["article-count"] || "0", 10) || 0;
+    const tax = Number.parseFloat(row["tax"] || "0") || 0;
+    const totalAmount = Number.parseFloat(row["total_amount"] || "0") || 0;
+    const revenue = round2(totalAmount - tax);
+    const bucket = productBucket(productName);
+    const rowDate = row["booking-date"]?.slice(0, 10) || "";
+    if (rowDate) {
+      rowDates.push(rowDate);
+    }
+
+    const metrics = getOrCreateMetrics(officeId);
+    metrics.transactions += transactions;
+    metrics.revenue += revenue;
+    metrics.rowCount += 1;
+    metrics.bucketTransactions[bucket] += transactions;
+    metrics.bucketRevenue[bucket] += revenue;
+
+    if (bucket === "speedPost") {
+      const detail = metrics.speedPostDetails[productName] || { transactions: 0, revenue: 0 };
+      detail.transactions += transactions;
+      detail.revenue += revenue;
+      metrics.speedPostDetails[productName] = detail;
+    }
+
+    const existingProductTotal = productTotalsMap.get(productName) || { transactions: 0, revenue: 0 };
+    existingProductTotal.transactions += transactions;
+    existingProductTotal.revenue += revenue;
+    productTotalsMap.set(productName, existingProductTotal);
+
+    bucketTotals[bucket] += transactions;
+
+    if (revenue < 0) {
+      negativeRowCount += 1;
+      if (negativeRowExamples.length < 25) {
+        negativeRowExamples.push({
+          officeId,
+          officeName: row["office-name"],
+          productName,
+          transactions,
+          tax: round2(tax),
+          totalAmount: round2(totalAmount),
+          revenue
+        });
+      }
+    }
+  }
+
+  const allOfficeIds = new Set<number>(baseData.offices.map((office) => office.officeId));
+  for (const officeId of officeMetrics.keys()) {
+    allOfficeIds.add(officeId);
+  }
+
+  const offices: Office[] = [];
+  for (const office of baseData.offices) {
+    const metrics = officeMetrics.get(office.officeId) ?? {
+      transactions: 0,
+      revenue: 0,
+      rowCount: 0,
+      bucketTransactions: { speedPost: 0, parcels: 0, other: 0 },
+      bucketRevenue: { speedPost: 0, parcels: 0, other: 0 },
+      speedPostDetails: {}
+    };
+    const targetBand: TargetBand =
+      office.category === "BO" && office.officeStatus === "Active"
+        ? metrics.transactions === 0
+          ? "Nil"
+          : metrics.transactions <= 10
+          ? "1-10"
+          : ">10"
+        : "Not BO";
+
+    offices.push({
+      ...office,
+      transactions: metrics.transactions,
+      revenue: round2(metrics.revenue),
+      rowCount: metrics.rowCount,
+      bucketTransactions: {
+        speedPost: metrics.bucketTransactions.speedPost,
+        parcels: metrics.bucketTransactions.parcels,
+        other: metrics.bucketTransactions.other
+      },
+      bucketRevenue: {
+        speedPost: round2(metrics.bucketRevenue.speedPost),
+        parcels: round2(metrics.bucketRevenue.parcels),
+        other: round2(metrics.bucketRevenue.other)
+      },
+      speedPostDetails: Object.entries(metrics.speedPostDetails).map(([productName, values]) => ({
+        productName,
+        transactions: values.transactions,
+        revenue: round2(values.revenue)
+      })),
+      targetBand,
+      negativeRevenue: metrics.revenue < 0
+    });
+  }
+
+  const extraOfficeIds = Array.from(allOfficeIds).filter(
+    (officeId) => !officeMetaMap.has(officeId)
+  );
+  for (const officeId of extraOfficeIds) {
+    const metrics = officeMetrics.get(officeId);
+    if (!metrics) {
+      continue;
+    }
+    offices.push({
+      officeId,
+      officeName: `Office ${officeId}`,
+      officeTypeCode: "MISSING",
+      officeTypeDesc: "Missing hierarchy",
+      officeStatus: "Unknown",
+      regionName: "Unmapped",
+      divisionName: "Unmapped / Missing hierarchy",
+      divisionGroup: "missing",
+      subDivisionName: "Unmapped",
+      hoName: "",
+      soName: "",
+      boName: "",
+      category: "Others",
+      missingHierarchy: true,
+      transactions: metrics.transactions,
+      revenue: round2(metrics.revenue),
+      rowCount: metrics.rowCount,
+      bucketTransactions: {
+        speedPost: metrics.bucketTransactions.speedPost,
+        parcels: metrics.bucketTransactions.parcels,
+        other: metrics.bucketTransactions.other
+      },
+      bucketRevenue: {
+        speedPost: round2(metrics.bucketRevenue.speedPost),
+        parcels: round2(metrics.bucketRevenue.parcels),
+        other: round2(metrics.bucketRevenue.other)
+      },
+      speedPostDetails: Object.entries(metrics.speedPostDetails).map(([productName, values]) => ({
+        productName,
+        transactions: values.transactions,
+        revenue: round2(values.revenue)
+      })),
+      targetBand: "Not BO",
+      negativeRevenue: metrics.revenue < 0
+    });
+  }
+
+  const uniqueBookingOffices = new Set(rows.map((row) => parseInt(row["office-id"], 10))).size;
+  const dateStart = rowDates.sort()[0] ?? `${month}-01`;
+  const dateEnd = rowDates.sort().reverse()[0] ?? `${month}-31`;
+
+  const productTotals = Array.from(productTotalsMap.entries())
+    .sort((left, right) => left[0].localeCompare(right[0]))
+    .map(([productName, totals]) => ({
+      productName,
+      transactions: totals.transactions,
+      revenue: round2(totals.revenue),
+      bucket: productBucket(productName)
+    }));
+
+  const activeBOS = offices.filter(
+    (office) => office.category === "BO" && office.officeStatus === "Active"
+  );
+
+  const circle: CircleSummary = {
+    name: baseData.circle.name,
+    activeBOs: activeBOS.length,
+    nilBOs: activeBOS.filter((office) => office.targetBand === "Nil").length,
+    lowBOs: activeBOS.filter((office) => office.targetBand === "1-10").length,
+    aboveTargetBOs: activeBOS.filter((office) => office.targetBand === ">10").length,
+    transactions: offices.reduce((sum, office) => sum + office.transactions, 0),
+    revenue: round2(offices.reduce((sum, office) => sum + office.revenue, 0)),
+    bucketTransactions: {
+      speedPost: offices.reduce((sum, office) => sum + office.bucketTransactions.speedPost, 0),
+      parcels: offices.reduce((sum, office) => sum + office.bucketTransactions.parcels, 0),
+      other: offices.reduce((sum, office) => sum + office.bucketTransactions.other, 0)
+    },
+    bucketRevenue: {
+      speedPost: round2(offices.reduce((sum, office) => sum + office.bucketRevenue.speedPost, 0)),
+      parcels: round2(offices.reduce((sum, office) => sum + office.bucketRevenue.parcels, 0)),
+      other: round2(offices.reduce((sum, office) => sum + office.bucketRevenue.other, 0))
+    },
+    divisionCounts: baseData.circle.divisionCounts
+  };
+
+  const regions = summarizeGroup(offices.filter((office) => office.regionName !== "Unmapped"), "regionName");
+  const divisions = summarizeGroup(
+    offices.filter((office) => office.divisionGroup === "postal" || office.divisionGroup === "rms" || office.divisionGroup === "adminOther"),
+    "divisionName"
+  );
+
+  const dataQuality = {
+    nilBOs: activeBOS
+      .filter((office) => office.targetBand === "Nil")
+      .map((office) => ({
+        officeId: office.officeId,
+        officeName: office.officeName,
+        regionName: office.regionName,
+        divisionName: office.divisionName
+      })),
+    missingHierarchyOffices: offices
+      .filter((office) => office.missingHierarchy)
+      .map((office) => ({
+        officeId: office.officeId,
+        officeName: office.officeName,
+        transactions: office.transactions,
+        revenue: office.revenue
+      })),
+    negativeRevenueOffices: offices
+      .filter((office) => office.negativeRevenue)
+      .map((office) => ({
+        officeId: office.officeId,
+        officeName: office.officeName,
+        regionName: office.regionName,
+        divisionName: office.divisionName,
+        revenue: office.revenue
+      })),
+    negativeRevenueRowCount: negativeRowCount,
+    negativeRevenueRowExamples: negativeRowExamples
+  };
+
+  return {
+    metadata: {
+      sourceFiles: {
+        bookings: sourceFile,
+        hierarchy: baseData.metadata.sourceFiles.hierarchy
+      },
+      generatedAt: new Date().toISOString(),
+      dateStart,
+      dateEnd,
+      rowCounts: {
+        csvRows,
+        uniqueBookingOffices,
+        hierarchyOffices: baseData.metadata.rowCounts.hierarchyOffices,
+        generatedOffices: offices.length
+      },
+      rules: baseData.metadata.rules
+    },
+    circle,
+    regions,
+    divisions,
+    offices,
+    productTotals,
+    dataQuality
+  };
+}
+
 function targetRate(summary: Pick<Summary, "aboveTargetBOs" | "activeBOs">): number {
   return summary.activeBOs ? summary.aboveTargetBOs / summary.activeBOs : 0;
 }
@@ -1281,8 +1725,17 @@ function App() {
     }
 
     let active = true;
-    const monthUrl = `${import.meta.env.BASE_URL}data/dashboard-data-${selectedMonth}.json`;
+    const monthKey = selectedMonth ?? "";
+    const monthFile = getMonthCsvFileName(monthKey);
+    if (!monthFile) {
+      setDisplayData(baseData);
+      setMonthNote(
+        `Monthly data for ${monthKey} is not available in the uploaded files. Showing full-range dataset.`
+      );
+      return;
+    }
 
+    const monthUrl = `${import.meta.env.BASE_URL}data/${monthFile}`;
     fetch(monthUrl)
       .then((response) => {
         if (!active) {
@@ -1292,17 +1745,18 @@ function App() {
         if (!response.ok) {
           setDisplayData(baseData);
           setMonthNote(
-            `Monthly data for ${selectedMonth} is not available. Showing full-range dataset.`
+            `Monthly data for ${selectedMonth} is not available in the uploaded files. Showing full-range dataset.`
           );
           return null;
         }
-        return response.json();
+        return response.text();
       })
-      .then((payload: DashboardData | null) => {
-        if (!active || !payload) {
+      .then((payloadText: string | null) => {
+        if (!active || payloadText === null) {
           return;
         }
-        setDisplayData(payload);
+        const monthlyData = buildMonthlyDashboardData(baseData, payloadText, monthKey, monthFile);
+        setDisplayData(monthlyData);
         setMonthNote("");
       })
       .catch(() => {
