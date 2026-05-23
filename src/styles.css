@@ -371,6 +371,22 @@ section {
   text-transform: uppercase;
 }
 
+.filter-group select {
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafb;
+  color: #17202a;
+  padding: 0 14px;
+}
+
+.filter-group select:focus {
+  border-color: var(--blue);
+  outline: 2px solid rgba(47, 111, 168, 0.2);
+  outline-offset: 1px;
+}
+
 .checkbox-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

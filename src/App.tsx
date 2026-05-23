@@ -1017,37 +1017,34 @@ function QualityPanel({ quality }: { quality: DashboardData["dataQuality"] }) {
 function RegionDivisionFilterPanel({
   regions,
   divisions,
-  selectedRegions,
-  selectedDivisions,
-  availableDivisions,
-  onToggleRegion,
-  onToggleDivision,
+  selectedRegion,
+  selectedDivision,
+  onRegionChange,
+  onDivisionChange,
   onClearFilters
 }: {
   regions: string[];
   divisions: string[];
-  selectedRegions: string[];
-  selectedDivisions: string[];
-  availableDivisions: string[];
-  onToggleRegion: (region: string) => void;
-  onToggleDivision: (division: string) => void;
+  selectedRegion: string;
+  selectedDivision: string;
+  onRegionChange: (region: string) => void;
+  onDivisionChange: (division: string) => void;
   onClearFilters: () => void;
 }) {
-  const regionCount = selectedRegions.length;
-  const divisionCount = selectedDivisions.length;
-
   return (
     <section className="filter-panel" aria-label="Region and division filters">
       <div className="filter-panel-head">
         <div>
           <span className="kicker">Filters</span>
-          <h2>Region and division selection</h2>
+          <h2>Select region and division</h2>
           <p className="filter-summary">
-            {regionCount || divisionCount
-              ? `${regionCount ? `${regionCount} region${regionCount === 1 ? "" : "s"}` : ""}${
-                  regionCount && divisionCount ? " · " : ""
-                }${divisionCount ? `${divisionCount} division${divisionCount === 1 ? "" : "s"}` : ""}`
-              : "All regions and divisions are included."}
+            {selectedRegion === "All" && selectedDivision === "All"
+              ? "All regions and divisions are included."
+              : `${selectedRegion !== "All" ? selectedRegion : "All regions"}${
+                  selectedDivision !== "All"
+                    ? ` · ${selectedDivision}`
+                    : ""
+                }`}
           </p>
         </div>
         <button type="button" className="clear-filters" onClick={onClearFilters}>
@@ -1057,51 +1054,33 @@ function RegionDivisionFilterPanel({
 
       <div className="filter-grid">
         <div className="filter-group">
-          <span>Regions</span>
-          <div className="checkbox-grid">
-            {regions.map((region) => {
-              const active = selectedRegions.includes(region);
-              return (
-                <label
-                  key={region}
-                  className={`filter-pill ${active ? "active" : ""}`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={active}
-                    onChange={() => onToggleRegion(region)}
-                  />
-                  <span>{region}</span>
-                </label>
-              );
-            })}
-          </div>
+          <span>Region</span>
+          <select
+            value={selectedRegion}
+            onChange={(event) => onRegionChange(event.target.value)}
+          >
+            <option value="All">All regions</option>
+            {regions.map((region) => (
+              <option key={region} value={region}>
+                {region}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div className="filter-group">
-          <span>Divisions</span>
-          <div className="checkbox-grid">
-            {divisions.map((division) => {
-              const disabled = !availableDivisions.includes(division);
-              const active = selectedDivisions.includes(division);
-              return (
-                <label
-                  key={division}
-                  className={`filter-pill ${active ? "active" : ""} ${
-                    disabled ? "disabled" : ""
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={active}
-                    disabled={disabled}
-                    onChange={() => onToggleDivision(division)}
-                  />
-                  <span>{division}</span>
-                </label>
-              );
-            })}
-          </div>
+          <span>Division</span>
+          <select
+            value={selectedDivision}
+            onChange={(event) => onDivisionChange(event.target.value)}
+          >
+            <option value="All">All divisions</option>
+            {divisions.map((division) => (
+              <option key={division} value={division}>
+                {division}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
     </section>
@@ -1110,40 +1089,37 @@ function RegionDivisionFilterPanel({
 
 function SearchSection({
   offices,
-  selectedRegions,
-  selectedDivisions
+  selectedRegion,
+  selectedDivision
 }: {
   offices: Office[];
-  selectedRegions: string[];
-  selectedDivisions: string[];
+  selectedRegion: string;
+  selectedDivision: string;
 }) {
   const [officeQuery, setOfficeQuery] = useState("");
   const [expandedOfficeId, setExpandedOfficeId] = useState<number | null>(null);
 
   const activeFilterSummary = useMemo(() => {
-    const pieces: string[] = [];
-    if (selectedRegions.length) {
-      pieces.push(
-        `${selectedRegions.length} region${selectedRegions.length === 1 ? "" : "s"}`
-      );
+    if (selectedRegion === "All" && selectedDivision === "All") {
+      return "All regions and divisions";
     }
-    if (selectedDivisions.length) {
-      pieces.push(
-        `${selectedDivisions.length} division${selectedDivisions.length === 1 ? "" : "s"}`
-      );
+    if (selectedRegion === "All") {
+      return selectedDivision;
     }
-    return pieces.length ? pieces.join(" · ") : "All regions and divisions";
-  }, [selectedDivisions, selectedRegions]);
+    if (selectedDivision === "All") {
+      return selectedRegion;
+    }
+    return `${selectedRegion} · ${selectedDivision}`;
+  }, [selectedDivision, selectedRegion]);
 
   const filteredOffices = useMemo(() => {
     const query = officeQuery.trim().toLowerCase();
     return offices
-      .filter(
-        (office) => !selectedRegions.length || selectedRegions.includes(office.regionName)
+      .filter((office) =>
+        selectedRegion === "All" ? true : office.regionName === selectedRegion
       )
-      .filter(
-        (office) =>
-          !selectedDivisions.length || selectedDivisions.includes(office.divisionName)
+      .filter((office) =>
+        selectedDivision === "All" ? true : office.divisionName === selectedDivision
       )
       .filter((office) => {
         if (!query) {
@@ -1171,7 +1147,7 @@ function SearchSection({
         }
         return left.officeName.localeCompare(right.officeName);
       });
-  }, [officeQuery, offices, selectedDivisions, selectedRegions]);
+  }, [officeQuery, offices, selectedDivision, selectedRegion]);
 
   const visibleOffices = filteredOffices.slice(0, 300);
 
@@ -1538,37 +1514,48 @@ function Dashboard({
         .sort((left, right) => left.localeCompare(right)),
     []
   );
-  const postalDivisions = data.divisions.filter(
-    (division) => division.divisionGroup === "postal"
-  );
-  const rmsDivisions = data.divisions.filter(
-    (division) => division.divisionGroup === "rms"
-  );
-  const adminDivisions = data.divisions.filter(
-    (division) => division.divisionGroup === "adminOther"
-  );
-  const [selectedRegions, setSelectedRegions] = useState<string[]>([]);
-  const [selectedDivisions, setSelectedDivisions] = useState<string[]>([]);
+  const [selectedRegion, setSelectedRegion] = useState("All");
+  const [selectedDivision, setSelectedDivision] = useState("All");
 
   const availableDivisions = useMemo(() => {
-    if (!selectedRegions.length) {
+    if (selectedRegion === "All") {
       return divisions;
     }
 
     const allowed = new Set(
       data.offices
-        .filter((office) => selectedRegions.includes(office.regionName))
+        .filter((office) => office.regionName === selectedRegion)
         .map((office) => office.divisionName)
     );
 
     return divisions.filter((division) => allowed.has(division));
-  }, [selectedRegions, divisions, data.offices]);
+  }, [selectedRegion, divisions, data.offices]);
 
   useEffect(() => {
-    setSelectedDivisions((current) =>
-      current.filter((division) => availableDivisions.includes(division))
-    );
-  }, [availableDivisions]);
+    if (selectedDivision !== "All" && !availableDivisions.includes(selectedDivision)) {
+      setSelectedDivision("All");
+    }
+  }, [availableDivisions, selectedDivision]);
+
+  const visibleDivisions = useMemo(
+    () =>
+      data.divisions.filter(
+        (division) =>
+          (selectedRegion === "All" || division.regionName === selectedRegion) &&
+          (selectedDivision === "All" || division.name === selectedDivision)
+      ),
+    [data.divisions, selectedDivision, selectedRegion]
+  );
+
+  const postalDivisions = visibleDivisions.filter(
+    (division) => division.divisionGroup === "postal"
+  );
+  const rmsDivisions = visibleDivisions.filter(
+    (division) => division.divisionGroup === "rms"
+  );
+  const adminDivisions = visibleDivisions.filter(
+    (division) => division.divisionGroup === "adminOther"
+  );
 
   const generatedDate = new Date(data.metadata.generatedAt).toLocaleString("en-IN", {
     dateStyle: "medium",
@@ -1730,32 +1717,6 @@ function Dashboard({
 
       <QualityPanel quality={data.dataQuality} />
 
-      <RegionDivisionFilterPanel
-        regions={regions}
-        divisions={divisions}
-        selectedRegions={selectedRegions}
-        selectedDivisions={selectedDivisions}
-        availableDivisions={availableDivisions}
-        onToggleRegion={(region) => {
-          setSelectedRegions((current) =>
-            current.includes(region)
-              ? current.filter((item) => item !== region)
-              : [...current, region]
-          );
-        }}
-        onToggleDivision={(division) => {
-          setSelectedDivisions((current) =>
-            current.includes(division)
-              ? current.filter((item) => item !== division)
-              : [...current, division]
-          );
-        }}
-        onClearFilters={() => {
-          setSelectedRegions([]);
-          setSelectedDivisions([]);
-        }}
-      />
-
       <section className="region-section">
         <SectionHeader
           kicker="Region Level"
@@ -1768,6 +1729,24 @@ function Dashboard({
           ))}
         </div>
       </section>
+
+      <RegionDivisionFilterPanel
+        regions={regions}
+        divisions={availableDivisions}
+        selectedRegion={selectedRegion}
+        selectedDivision={selectedDivision}
+        onRegionChange={(region) => {
+          setSelectedRegion(region);
+          if (region === "All") {
+            setSelectedDivision("All");
+          }
+        }}
+        onDivisionChange={(division) => setSelectedDivision(division)}
+        onClearFilters={() => {
+          setSelectedRegion("All");
+          setSelectedDivision("All");
+        }}
+      />
 
       <section className="division-section">
         <SectionHeader
@@ -1782,8 +1761,8 @@ function Dashboard({
 
       <SearchSection
         offices={data.offices}
-        selectedRegions={selectedRegions}
-        selectedDivisions={selectedDivisions}
+        selectedRegion={selectedRegion}
+        selectedDivision={selectedDivision}
       />
 
       {selectedBOCategory && (
